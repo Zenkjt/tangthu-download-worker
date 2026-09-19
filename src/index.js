@@ -27,13 +27,49 @@ export default {
         });
       }
 
-      // Google Drive direct-download endpoint
+      // Fetch the EPUB from Google Drive instead of redirecting the reader.
       const target =
         "https://drive.usercontent.google.com/download?id=" +
         encodeURIComponent(fileId) +
         "&export=download&confirm=t";
 
-      return Response.redirect(target, 302);
+      const upstream = await fetch(target, {
+        redirect: "follow",
+      });
+
+      if (!upstream.ok) {
+        return new Response("Upstream download failed", {
+          status: 502,
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+          },
+        });
+      }
+
+      const headers = new Headers();
+
+      // Match the HTTP contract used by Mayberry/Branch.
+      headers.set("Content-Type", "application/epub+zip");
+
+      // Preserve the exact upstream file size.
+      const contentLength = upstream.headers.get("Content-Length");
+      if (contentLength) {
+        headers.set("Content-Length", contentLength);
+      }
+
+      // Safe deterministic filename.
+      headers.set(
+        "Content-Disposition",
+        `attachment; filename="${fileId}.epub"`,
+      );
+
+      // Stream the EPUB directly.
+      // Do NOT call arrayBuffer() — the whole file must not be buffered
+      // in Worker memory.
+      return new Response(upstream.body, {
+        status: 200,
+        headers,
+      });
     }
 
     return new Response("Not found", {
