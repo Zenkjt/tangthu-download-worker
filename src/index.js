@@ -2,11 +2,28 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
 
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Expose-Headers":
+        "Content-Type, Content-Length, Content-Disposition",
+    };
+
+    // CORS preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders,
+      });
+    }
+
     // Health check
     if (url.pathname === "/") {
       return new Response("Tàng Thư Download Worker OK", {
         status: 200,
         headers: {
+          ...corsHeaders,
           "Content-Type": "text/plain; charset=utf-8",
         },
       });
@@ -22,50 +39,74 @@ export default {
         return new Response("Missing file ID", {
           status: 400,
           headers: {
+            ...corsHeaders,
             "Content-Type": "text/plain; charset=utf-8",
           },
         });
       }
 
-      // Fetch the EPUB from Google Drive instead of redirecting the reader.
       const target =
         "https://drive.usercontent.google.com/download?id=" +
         encodeURIComponent(fileId) +
         "&export=download&confirm=t";
 
-      const upstream = await fetch(target, {
-        redirect: "follow",
-      });
+      let upstream;
 
-      if (!upstream.ok) {
-        return new Response("Upstream download failed", {
+      try {
+        upstream = await fetch(target, {
+          redirect: "follow",
+        });
+      } catch (error) {
+        return new Response("Upstream fetch failed: " + error.message, {
           status: 502,
           headers: {
+            ...corsHeaders,
             "Content-Type": "text/plain; charset=utf-8",
           },
         });
       }
 
-      const headers = new Headers();
+      if (!upstream.ok) {
+        return new Response(
+          `Upstream download failed: HTTP ${upstream.status}`,
+          {
+            status: 502,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "text/plain; charset=utf-8",
+            },
+          },
+        );
+      }
 
-      // Match the HTTP contract used by Mayberry/Branch.
-      headers.set("Content-Type", "application/epub+zip");
+      const headers = new Headers(corsHeaders);
 
-      // Preserve the exact upstream file size.
+      // IMPORTANT:
+      // Preserve the real file MIME type from Google Drive.
+      const contentType =
+        upstream.headers.get("Content-Type") ||
+        "application/octet-stream";
+
+      headers.set("Content-Type", contentType);
+
       const contentLength = upstream.headers.get("Content-Length");
       if (contentLength) {
         headers.set("Content-Length", contentLength);
       }
 
-      // Safe deterministic filename.
-      headers.set(
-        "Content-Disposition",
-        `attachment; filename="${fileId}.epub"`,
-      );
+      const contentDisposition =
+        upstream.headers.get("Content-Disposition");
 
-      // Stream the EPUB directly.
-      // Do NOT call arrayBuffer() — the whole file must not be buffered
-      // in Worker memory.
+      if (contentDisposition) {
+        headers.set("Content-Disposition", contentDisposition);
+      } else {
+        headers.set(
+          "Content-Disposition",
+          `inline; filename="${fileId}"`,
+        );
+      }
+
+      // Stream directly from Google Drive.
       return new Response(upstream.body, {
         status: 200,
         headers,
@@ -75,6 +116,7 @@ export default {
     return new Response("Not found", {
       status: 404,
       headers: {
+        ...corsHeaders,
         "Content-Type": "text/plain; charset=utf-8",
       },
     });
